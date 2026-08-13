@@ -15,12 +15,12 @@ const {
   StreamType,
   entersState,
 } = require('@discordjs/voice');
-const ffmpegPath = require('ffmpeg-static');
 const { spawn } = require('node:child_process');
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID || '';
+const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
 
 if (!TOKEN || !CLIENT_ID) {
   throw new Error('Missing DISCORD_TOKEN or CLIENT_ID secret/environment variable.');
@@ -30,7 +30,6 @@ const SURAHES = [
   'الفاتحة','البقرة','آل عمران','النساء','المائدة','الأنعام','الأعراف','الأنفال','التوبة','يونس','هود','يوسف','الرعد','إبراهيم','الحجر','النحل','الإسراء','الكهف','مريم','طه','الأنبياء','الحج','المؤمنون','النور','الفرقان','الشعراء','النمل','القصص','العنكبوت','الروم','لقمان','السجدة','الأحزاب','سبأ','فاطر','يس','الصافات','ص','الزمر','غافر','فصلت','الشورى','الزخرف','الدخان','الجاثية','الأحقاف','محمد','الفتح','الحجرات','ق','الذاريات','الطور','النجم','القمر','الرحمن','الواقعة','الحديد','المجادلة','الحشر','الممتحنة','الصف','الجمعة','المنافقون','التغابن','الطلاق','التحريم','الملك','القلم','الحاقة','المعارج','نوح','الجن','المزمل','المدثر','القيامة','الإنسان','المرسلات','النبأ','النازعات','عبس','التكوير','الانفطار','المطففين','الانشقاق','البروج','الطارق','الأعلى','الغاشية','الفجر','البلد','الشمس','الليل','الضحى','الشرح','التين','العلق','القدر','البينة','الزلزلة','العاديات','القارعة','التكاثر','العصر','الهمزة','الفيل','قريش','الماعون','الكوثر','الكافرون','النصر','المسد','الإخلاص','الفلق','الناس'
 ];
 
-// Reciter IDs are from QuranAPI's public audio-recitation endpoint.
 const RECITERS = {
   'مشاري العفاسي': 1,
   'أبو بكر الشاطري': 2,
@@ -53,21 +52,16 @@ function normalizeSurah(input) {
 async function getAudioUrl(surah, reciter) {
   const reciterId = RECITERS[reciter];
   if (!reciterId) return null;
-
   const key = `${surah}:${reciterId}`;
   if (audioCache.has(key)) return audioCache.get(key);
 
   const response = await fetch(`https://quranapi.pages.dev/api/audio/${surah}.json`);
   if (!response.ok) throw new Error(`QuranAPI returned HTTP ${response.status}`);
-
   const data = await response.json();
   const entry = data[String(reciterId)];
   if (!entry) return null;
-
-  // Prefer the public mirrored URL. Fall back to the original audio URL.
   const url = entry.url || entry.originalUrl;
   if (!url) return null;
-
   audioCache.set(key, url);
   return url;
 }
@@ -78,10 +72,9 @@ async function playAudio(session) {
 
   try { session.ffmpeg?.kill('SIGKILL'); } catch {}
 
-  // Stream the remote chapter through ffmpeg instead of storing MP3 files in GitHub.
-  const ff = spawn(ffmpegPath, [
-    '-hide_banner', '-loglevel', 'error', '-reconnect', '1',
-    '-reconnect_streamed', '1', '-reconnect_delay_max', '5',
+  const ff = spawn(FFMPEG, [
+    '-hide_banner', '-loglevel', 'error',
+    '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5',
     '-i', url,
     '-f', 's16le', '-ar', '48000', '-ac', '2', 'pipe:1'
   ], { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -112,9 +105,7 @@ function stopSession(guildId) {
 }
 
 const commands = [
-  new SlashCommandBuilder()
-    .setName('play')
-    .setDescription('تشغيل سورة من القارئ المختار')
+  new SlashCommandBuilder().setName('play').setDescription('تشغيل سورة من القارئ المختار')
     .addStringOption(o => o.setName('surah').setDescription('رقم السورة أو اسمها').setRequired(true).setAutocomplete(true))
     .addStringOption(o => o.setName('reciter').setDescription('القارئ').setRequired(true).setAutocomplete(true)),
   new SlashCommandBuilder().setName('loop').setDescription('تفعيل/تعطيل تكرار السورة الحالية'),
@@ -144,15 +135,12 @@ client.on('interactionCreate', async interaction => {
       const focused = interaction.options.getFocused(true);
       if (focused.name === 'surah') {
         const q = String(focused.value).toLowerCase();
-        const choices = SURAHES.map((name, i) => ({ name: `${i + 1}. ${name}`, value: String(i + 1) }))
-          .filter(x => x.name.toLowerCase().includes(q) || x.value === q).slice(0, 25);
-        return interaction.respond(choices);
+        return interaction.respond(SURAHES.map((name, i) => ({ name: `${i + 1}. ${name}`, value: String(i + 1) }))
+          .filter(x => x.name.toLowerCase().includes(q) || x.value === q).slice(0, 25));
       }
       if (focused.name === 'reciter') {
         const q = String(focused.value).toLowerCase();
-        return interaction.respond(Object.keys(RECITERS)
-          .filter(name => name.toLowerCase().includes(q)).slice(0, 25)
-          .map(name => ({ name, value: name })));
+        return interaction.respond(Object.keys(RECITERS).filter(name => name.toLowerCase().includes(q)).slice(0, 25).map(name => ({ name, value: name })));
       }
       return;
     }
@@ -175,12 +163,7 @@ client.on('interactionCreate', async interaction => {
       if (!url) return interaction.editReply('التلاوة غير متاحة لهذا القارئ حاليًا.');
 
       stopSession(guild.id);
-      const connection = joinVoiceChannel({
-        channelId: channel.id,
-        guildId: guild.id,
-        adapterCreator: guild.voiceAdapterCreator,
-        selfDeaf: false,
-      });
+      const connection = joinVoiceChannel({ channelId: channel.id, guildId: guild.id, adapterCreator: guild.voiceAdapterCreator, selfDeaf: false });
       await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
 
       const player = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Play } });
@@ -200,9 +183,7 @@ client.on('interactionCreate', async interaction => {
         try {
           await entersState(connection, VoiceConnectionStatus.Signalling, 5_000);
           await entersState(connection, VoiceConnectionStatus.Ready, 15_000);
-        } catch {
-          console.error('Voice connection could not recover.');
-        }
+        } catch { console.error('Voice connection could not recover.'); }
       });
 
       await playAudio(session);
