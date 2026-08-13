@@ -1,0 +1,96 @@
+name: Quran Discord Bot
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    paths:
+      - 'src/**'
+      - 'audio/**'
+      - 'package.json'
+      - '.github/workflows/quran-bot.yml'
+
+# Based on the runner-refresh/recovery pattern used by the Survival-Economy
+# repository: restart the bot if its process exits, and queue a replacement
+# workflow before the GitHub-hosted runner reaches its job lifetime.
+concurrency:
+  group: quran-discord-bot
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Run with recovery and refresh
+        shell: bash
+        env:
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          CLIENT_ID: ${{ secrets.CLIENT_ID }}
+          GUILD_ID: ${{ secrets.GUILD_ID }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -u
+
+          START_TIME=$(date +%s)
+          REFRESH_AFTER=19800
+          RESTART_DELAY=5
+
+          start_bot() {
+            echo "🚀 Starting Quran Discord bot..."
+            npm start &
+            BOT_PID=$!
+            echo "Bot PID: $BOT_PID"
+          }
+
+          if [ -z "${DISCORD_TOKEN:-}" ] || [ -z "${CLIENT_ID:-}" ]; then
+            echo "❌ DISCORD_TOKEN and CLIENT_ID secrets are required."
+            exit 1
+          fi
+
+          start_bot
+
+          while true; do
+            NOW=$(date +%s)
+            ELAPSED=$((NOW - START_TIME))
+
+            if ! kill -0 "$BOT_PID" 2>/dev/null; then
+              echo "⚠️ Bot stopped. Restarting in ${RESTART_DELAY}s..."
+              wait "$BOT_PID" 2>/dev/null || true
+              sleep "$RESTART_DELAY"
+              start_bot
+              continue
+            fi
+
+            if [ "$ELAPSED" -ge "$REFRESH_AFTER" ]; then
+              echo "♻️ Queueing replacement workflow before runner timeout..."
+              if gh workflow run quran-bot.yml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME"; then
+                echo "✅ Replacement queued. Stopping current bot session."
+                kill "$BOT_PID" 2>/dev/null || true
+                wait "$BOT_PID" 2>/dev/null || true
+                exit 0
+              else
+                echo "⚠️ Replacement could not be queued; keeping current session."
+                sleep 30
+              fi
+            fi
+
+            sleep 10
+          done
