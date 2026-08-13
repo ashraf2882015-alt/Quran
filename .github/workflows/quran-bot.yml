@@ -10,9 +10,6 @@ on:
       - 'package.json'
       - '.github/workflows/quran-bot.yml'
 
-# Based on the runner-refresh/recovery pattern used by the Survival-Economy
-# repository: restart the bot if its process exits, and queue a replacement
-# workflow before the GitHub-hosted runner reaches its job lifetime.
 concurrency:
   group: quran-discord-bot
   cancel-in-progress: false
@@ -34,7 +31,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '24'
-          cache: npm
 
       - name: Install dependencies
         run: npm install --no-audit --no-fund
