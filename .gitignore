@@ -1,0 +1,7 @@
+node_modules/
+.env
+npm-debug.log*
+audio/**/*.mp3
+audio/**/*.m4a
+audio/**/*.ogg
+audio/**/*.wav
